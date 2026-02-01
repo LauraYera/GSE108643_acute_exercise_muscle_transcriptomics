@@ -1,0 +1,630 @@
+---
+title: "Influencia del ejercicio físico en la expresión génica humana: un enfoque bioinformático en la prevención del cáncer"
+author: "Laura Yera Fernandez"
+date: "2026-02-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+TFM_LauraYera | Máster Bioinformática
+
+## Objetivo principal
+
+- Analizar la expresión génica en un grupo de individuos sanos tras hacer ejercicio físico
+- Dataset utilizado: GSE108643 de la plataforma GEPREP
+
+```{r}
+# Ver en qué carpeta se trabaja
+getwd()
+
+# Definir la carpeta donde se tienen los datos y se quiere trabajar
+setwd("/Users/laurayf/Desktop/UNIR/2Q/TFM/Datos")
+```
+
+```{r}
+# Cargar librerías básicas y necesarias
+library(dplyr) # Librería para manipular datos
+library(readr) # Leer archivos
+library(tibble) # Trabajar con tablas
+library(tidyr) # Librería para manipular datos
+library(ggplot2) # Librería para visualizar gráficos
+library(limma) # Librería para analizar expresión
+library(ggrepel) # Volcano Plot
+library(pheatmap) # Librería para visualizar datos (heatmap)
+library(stats) # PCA
+library(factoextra) # visualización de PCA
+library(clusterProfiler) # Librería de anotación
+library(org.Hs.eg.db) # Librería de anotación
+library(enrichplot) # Librería para dotplots
+```
+
+Los análisis se realizaron en R con la versión R version 4.4.3 2025-02-28, utilizando un conjunto de librerías necesarias para el análisis transcriptómico, incluyendo dplyr y tidyr para la manipulación de datos, ggplot para la visualización de gráficos, limma para el análisis diferencial de expresión con datos normalizados y pheatmap para la representación gráfica de resultados. 
+
+```{r}
+# Cargar los datos del estudio de interés: GSE108643 (Plataforma GEPREP)
+list.files() # Comprobar que se está en la carpeta correcta donde se encuentran los datos
+
+# Primero se carga el archivo de metadatos descargado de la plataforma GEPREP
+metadatos <- read.csv("tableExport.csv")
+head(metadatos)
+colnames(metadatos)
+
+# Comprobar que los metadatos solo corresponden al estudio de interés GSE108643
+unique(metadatos$datasets)
+
+# Seleccionar y extraer las muestras de interés mediante la columna GSM
+GSM_interes <- metadatos$GSM
+GSM_interes
+
+# Comprobar cuantas muestras se tienen para el estudio
+length(GSM_interes)
+
+# Después se carga el archivo con todas las muestras humanas descargadas de GEPREP
+geprep_data <- read.table(
+  "geprep_data.txt",
+  header = TRUE,
+  sep = "\t",
+  row.names = 1,
+  check.names = FALSE,
+  fill = TRUE,
+  comment.char = "",
+  quote = ""
+)
+
+# Mirar cuántos genes y muestras se tienen de forma global
+dim(geprep_data)
+
+head(colnames(geprep_data)) # Revisar nombres de las columnas de geprep_data
+sum(colnames(geprep_data) %in% metadatos$GSM) # Verificar que las muestras del dataset están en metadatos
+length(metadatos$GSM)
+
+# Filtrar y seleccionar solo las muestras de interés del estudio GSE108643
+muestras_interes <- geprep_data[,
+ c("gene_name", metadatos$GSM)
+]
+
+dim(muestras_interes)
+
+# Poner los nombres de los genes de la columna gene_name como rownames
+rownames(muestras_interes) <- muestras_interes$gene_name
+
+# Asegurar que el orden de las muestras en la matriz de expresión coincide con el de los metadatos
+muestras_interes <- muestras_interes[, metadatos$GSM]
+all(colnames(muestras_interes) == metadatos$GSM)
+
+# Comprobación básica de la estructura y del rango de valores  
+class(muestras_interes)
+is.matrix(muestras_interes)
+is.data.frame(muestras_interes)
+str(muestras_interes[1:5, 1:5])
+range(muestras_interes, na.rm = TRUE)
+
+# Guardar el csv de metadatos y de expresión génica de las muestras que pertenecen al estudio GSE108643
+write.csv(
+  muestras_interes,
+  file = "GSE108643_data.csv",
+  row.names = TRUE # Para que se guarde la primera columna con los gene_name
+)
+
+write.csv(
+  metadatos,
+  file = "GSE108643_metadatos.csv"
+)
+```
+
+Para realizar este trabajo se utilizó un conjunto de datos de RNA-seq humano obtenido de la plataforma GEPREP, en concreto del estudio GSE108643, que analiza la respuesta transcriptómica del músculo esquelético antes y después de una sesión de ejercicio aeróbico (ciclismo).
+En primer lugar, se cargó el archivo de metadatos relacionado al estudio, a partir del cual se identificaron las muestras de interés teniendo en cuenta sus identificadores GSM. Estos identificadores se utilizaron posteriormente para filtrar la matriz de expresión génica global descargada desde GEPREP, conservando únicamente aquellas muestras que correspondían al estudio GSE108643.
+Tras el filtrado, se verificó que el orden de las muestras en la matriz de expresión coincidiese con el orden de los metadatos, para asegurar que los valores de expresión génica correspondían con el diseño experimental.
+Además, también se comprobó la estructura general del dataset y el rango de los valores de expresión, donde se confirmó que los datos ya habían tenido procesos de normalización y transformación previos.
+Finalmente, para facilitar los análisis posteriores, se generaron archivos en formato CSV que contenían la matriz de expresión génica filtrada y el archivo de metadatos asociado, los cuales sirvieron como punto de partido para el análisis exploratorio y el estudio de los cambios de expresión génica inducidos por el ejercicio físico.
+
+```{r}
+# Se utilizan los archivos CSV generados para trabajar con ellos
+expresion_genica <- read.csv(
+  "GSE108643_data.csv",
+  row.names = 1,
+  check.names = FALSE
+  )
+
+metadatos <- read.csv("GSE108643_metadatos.csv") # En este archivo CSV se tienen ambos grupos: sanos y obesos
+
+dim(expresion_genica)
+dim(metadatos)
+
+# Filtrar los datos por sujetos sanos que son los de interés
+table(metadatos$group)
+
+metadatos_normopeso <- metadatos %>%
+  filter(group == "lean exercise")
+
+table(metadatos_normopeso$group)
+
+# Guardar el CSV de metadatos_normopeso para filtrar solo por el grupo de interés
+write.csv(
+  metadatos_normopeso,
+  file = "GSE108643_metadatos_normopeso.csv"
+)
+```
+
+## Hacer PCA solo con sujetos normopeso (lean exercise) comparando pre y post ejercicio.
+
+```{r}
+metadatos_normopeso # Metadatos de los sujetos normopeso que son los de interés
+expresion_genica # Expresión génica de todos los sujetos del estudio GSE108643, se debe seleccionar solo los normopeso
+
+meta_lean <- metadatos_normopeso %>%
+  filter(group == "lean exercise") %>%
+  transmute(
+    GSM = GSM,
+    subject_id = `subject.id.or.sample.id.`,
+    timepoint = ifelse(biopsy.timepoint == "pre", "pre", "post")
+  )
+
+meta_lean$timepoint <- factor(meta_lean$timepoint, levels = c("pre", "post"))
+table(meta_lean$timepoint)
+
+# Preparar la matriz de expresión
+colnames(expresion_genica)
+rownames(expresion_genica)
+
+expr_mat <- as.matrix(expresion_genica)
+storage.mode(expr_mat) <- "numeric"
+
+# Ordenar los datos y poner las columnas de la matriz de expresión con el mismo orden que las filas del archivo meta_lean
+# Vector con los IDs de muestra (en el orden correcto)
+GSM_lean <- meta_lean$GSM
+
+# Seleccionar solo esas columnas y en ese orden
+expr_mat_lean <- expr_mat[, GSM_lean]
+
+all(colnames(expr_mat_lean) == meta_lean$GSM) # Comprobar 
+```
+
+## PCA
+
+El PCA se encarga de resumir miles de genes en unos pocos ejes para ver si las muestras se agrupan, por ejemplo, pre vs post.
+
+```{r}
+# Eliminar genes con varianza 0
+var_genes <- apply(expr_mat_lean, 1, var) # Calcular varianza de cada gen
+var_genes
+expr_mat_var <- expr_mat_lean[var_genes != 0, ] # Seleccionar solo los genes cuya varianza NO es cero
+
+dim(expr_mat_lean)
+dim(expr_mat_var)
+
+# Eliminar genes con NA
+sum(is.na(expr_mat_var))
+expr_mat_clean <- expr_mat_var[complete.cases(expr_mat_var), ]
+sum(is.na(expr_mat_clean))
+
+# Calcular el PCA (las muestras tienen que estar en las filas. 
+pca <- prcomp(t(expr_mat_clean), scale. = FALSE) # scale. = FALSE porque los datos ya están normalizados y transformados por la plataforma GEPREP
+summary(pca)
+
+# Datos para la representación del PCA
+pca_df <- as.data.frame(pca$x)
+pca_df$timepoint <- meta_lean$timepoint
+
+# Porcentaje de varianza explicada
+pca_var <- summary(pca)$importance[2, ] * 100
+
+# Representación gráfica PCA
+ggplot(pca_df, aes(x = PC1, y = PC2, color = timepoint, shape = timepoint)) +
+  stat_ellipse(aes(group = timepoint), level = 0.68, linewidth = 0.8) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("pre" = "#D55E00", "post" = "#0072B2")) +
+  scale_shape_manual(values = c("pre" = 16, "post" = 17)) +
+  labs(
+    title = "PCA – Sujetos Normopeso (lean exercise)",
+    x = paste0("PC1 (", round(pca_var[1], 1), "%)"),
+    y = paste0("PC2 (", round(pca_var[2], 1), "%)"),
+    color = "Timepoint",
+    shape = "Timepoint"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+```
+
+### Justificación del PCA
+
+El análisis de componentes principales (PCA) se utilizó como análisis exploratorio con el objetivo de evaluar la variabilidad global de la expresión génica entre las muestras obtenidas antes y después del ejercicio en sujetos normopeso.
+El PCA no mostró una separación completamente definida entre las dos condiciones, pre y post ejercicio, lo que indica que el ejercicio agudo no provoca cambios globales en todo el transcriptoma muscular. Sin embargo, se observa una tendencia de separación a los largo del primer componente principal (PC1), donde la mayoría de las muestras post ejercicio tienden a despalzarse hacia valores más positivos, mientras que las muestras pre ejercicio se agrupan preferentemente hacia valores más negativos. 
+Esta representación da a entender que hay cambios transcriptómicos sutiles pero que son consistentes y están inducidos por el ejercicio, lo cual es coherente con el diseño pareado del estudio. Que no haya una separación completa indica que el ejercicio no afecta de manera uniforme a todos los genes, sino que modula subconjuntos específicos Además, el PCA no revela la presencia de outliers extremos y muestra una distribución coherente de las muestras, lo que respalda la calidad de los datos y justifica la realización de un análisis de expresión diferencial para identificar genes concretos que están modulados por el ejercicio físico.
+
+## Estructura del experimento
+
+El estudio consta de 14 sujetos sanos, de los cuales se tiene una muestra pre y otra post ejercicio para cada individuo. Por lo tanto, se trata de un diseño pareado, en el que las muestras pre y post ejercicio corresponden a las mismas personas. Esto hace que las muestras no deban tratarse como observaciones independientes, sino teniendo en cuenta la variabilidad intraindividual. 
+
+### Definición del factor experimental
+
+Antes de realizar el análisis de expresión diferencial, fue necesario definir correctamente el diseño experimental y preparar los datos para su uso en el modelo estadístico. 
+La variable timepoint se definió como un factor con dos niveles (pre y post), siendo la condición pre la de referencia. Esto permitió evaluar de forma directa los cambios en la expresión génica inducidos por el ejercicio físico.
+
+```{r}
+head(meta_lean)
+
+meta_lean$timepoint <- factor(
+  meta_lean$timepoint,
+  levels = c("pre", "post")
+)
+```
+
+### Construcción del diseño estadístico
+
+Se construyó una matriz de diseño que incluía el identificador del sujeto y el momento de la biopsia (pre y post), lo que permitió llevar a cabo una comparación pareada de la expresión génica y poder evaluar los cambios inducidos por el ejercicio físico.
+
+En la matriz de diseño se incluye:
+- subject_id, para controlar la variabilidad individual (diseño pareado)
+- timepoint, para evaluar el efecto del ejercicio
+
+```{r}
+design <- model.matrix(~ subject_id + timepoint, data = meta_lean)
+```
+
+### Justificación del enfoque
+
+Usar un diseño pareado, añadiendo el identificador del sujeto en el modelo estadístico, permite controlar las diferencias basales entre individuos y evaluar de una forma más precisa los cambios de expresión génica inducidos por el ejercicio. Es por ello, que este enfoque es adecuado cuando se estudian con muestras pre y post que provienen del mismo sujeto, ya que tiene en cuenta la variabilidad intraindividual y refleja correctamente el diseño experimental del estudio.
+En este punto, se deja definido el modelo estadístico que se utilizará en los análisis posteriores. 
+
+### Objetivo del siguiente paso
+
+Una vez se definió el diseño estadístico, el siguiente paso consistió en aplicar un modelo lineal para identificar los genes diferencialmente expresados entre las condiciones pre y post ejercicio. Para ello, se utilizó el paquete limma, que permite estimar el efecto del ejercicio sobre la expresión génica y obtener, para cada gen, el cambio de expresión (logFC) y su significación stadística tras corrección por múltiples comparaciones.
+Los resultados obtenidos sirvieron como base para identificar aquellos genes diferencialmente expresados (DEGs), así como para su posterior visualización mediante volcano plots, heatmaps y el análisis funcional.
+
+```{r}
+# Ajustar el modelo lineal para cada gen
+fit <- lmFit(expr_mat_clean, design)
+
+# Aplicar Bayes empírico para estabilizar la estimación de la varianza
+fit <- eBayes(fit)
+
+# Tabla completa de resultados para el efecto post vs pre
+results <- topTable(
+  fit,
+  coef = "timepointpost",
+  number = Inf,
+  adjust.method = "BH"
+)
+```
+
+## Identificar genes diferencialmente expresados (DEGs)
+
+```{r}
+# Genes diferencialmente expresados
+DEGs <- results[results$adj.P.Val < 0.05 & abs(results$logFC) > 0.5, ]
+
+# Número total de genes diferencialmente expresados
+nrow(DEGs)
+```
+
+### Guardar resultados
+
+```{r}
+# Guardar los resultados en archivos CSV
+write.csv(results, "limma_results_all_genes.csv", row.names = TRUE)
+write.csv(DEGs, "limma_DEGs_filtered.csv", row.names = TRUE)
+```
+
+## Resultados del análisis diferencial
+
+A partir de los resultados obtenido con el modelo lineal, se pudieron identificar los genes diferencialmente expresados (DEGs) utilizando un umbral de significación estadística (FDR < 0.05) y un umbral mínimo de cambio de expresión (|logFC| > 0.05). A partir de esos criterios, se identificaron 47 genes diferencialmente expresados entre las condiciones pre y post ejercicio. 
+Entre los genes que se identificaron se encontraron genes relacionados con la estructura y función muscular, la respuesta al estrés celular, la autofagia y el metabolismo energético y mitocondrial, que son procesos coherentes con la respuesta fisiológica que se esperaba después de hacer ejercicio aeróbico. Estos resultados por lo tanto, indican que, aunque el ejercicio agudo no provoca cambios globales en todo el transcriptoma, sí que induce modificaciones específicas en subconjuntos concretos de genes. 
+Esto es consistentes con los resultados que se observaron en el análisis exploratorio mediante PCA, donde se no vió una separación completa entre ambas condiciones pero sí una tendencia de desplazamiento coherente entre muestras. 
+Los resultados del análisis diferencial refleja la base para las visualizaciones posteriores mediante volcano plot y heatmap de los genes significativos, así como para el análisis funcional de los procesos biológicos implicados. 
+
+## Volcano Plot
+
+```{r}
+# Preparar datos para el Volcano Plot (sin etiquetas de genes)
+volcano_df <- as.data.frame(results)
+volcano_df$gene <- rownames(results)
+volcano_df$negLog10FDR <- -log10(volcano_df$adj.P.Val)
+
+# Clasificar genes según su significancia y dirección de cambio
+deg_genes <- rownames(DEGs)
+
+volcano_df$status <- "Not Sig"
+volcano_df$status[volcano_df$gene %in% deg_genes & volcano_df$logFC > 0] <- "Up"
+volcano_df$status[volcano_df$gene %in% deg_genes & volcano_df$logFC < 0] <- "Down"
+
+# Truncar logFC para la visualización (solo para el eje X)
+cap <- 50
+volcano_df$logFC_plot <- volcano_df$logFC
+volcano_df$logFC_plot[volcano_df$logFC_plot >  cap] <-  cap
+volcano_df$logFC_plot[volcano_df$logFC_plot < -cap] <- -cap
+
+# Representación Volcano plot
+gg_volcano <- ggplot(volcano_df, aes(x = logFC_plot, y = negLog10FDR)) +
+  geom_point(aes(color = status), size = 1.8, alpha = 0.8) +
+  scale_color_manual(
+    values = c(
+      "Down"    = "#56B4E9",
+      "Not Sig" = "grey75",
+      "Up"      = "#D55E00"
+    ),
+    name = NULL
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "log2 Fold Change (post vs pre)",
+    y = "Significancia -log10(FDR)"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line        = element_line(color = "black"),
+    axis.title       = element_text(face = "bold"),
+    legend.position  = "right"
+  )
+
+gg_volcano
+```
+
+```{r}
+# Volcano Plot con genes representativos 
+genes_interes <- c(
+  "HSPB1", "SQSTM1", "TRIM63",
+  "ACTB", "ACTG1", "MYOT", "MYL6",
+  "MT-ND6", "MT-RNR2", "MT-TT"
+)
+
+label_df <- volcano_df %>%
+  filter(gene %in% genes_interes)
+
+gg_volcano_label <- gg_volcano +
+  geom_text_repel(
+    data = label_df,
+    aes(x = logFC_plot, y = negLog10FDR, label = gene),
+    size = 3,
+  )
+
+gg_volcano_label
+```
+
+Para facilitar la interpretación del Volcano Plot, se etiquetaron algunos de los genes representativos relacionados con procesos biológicos importantes, como la respuesta al estrés, la autofagia, la función mitocondrial y la estructura muscular.
+
+## Heatmap de los 47 DEGs
+
+```{r}
+# Matriz de expresión de los 47 DEGs y escalado (z-score por gen)
+expr_deg_47 <- expr_mat_clean[deg_genes, ]
+expr_deg_47_scaled <- t(scale(t(expr_deg_47)))
+
+# Ordenar columnas por sujeto y por timepoint (pre, post)
+meta_lean$timepoint <- factor(meta_lean$timepoint,
+                              levels = c("pre", "post"))
+meta_lean$subject_num <- as.integer(gsub("Lean ", "", meta_lean$subject_id))
+
+# Ordenar por factor subject_id (Lean 1, Lean 2, ..., Lean 14)
+meta_lean$subject_id <- factor(
+  meta_lean$subject_id,
+  levels = paste0("Lean ", sort(unique(meta_lean$subject_num)))
+)
+
+# Ordenar las filas de meta_lean por sujeto y timepoint
+meta_lean_ord <- meta_lean[order(meta_lean$subject_num, meta_lean$timepoint), ]
+
+# Comprobar que todos los GSM existan en la matriz
+all(meta_lean_ord$GSM %in% colnames(expr_deg_47_scaled))
+
+# Reordenar columnas de la matriz de expresión según ese orden
+expr_deg_47_scaled_ord <- expr_deg_47_scaled[, meta_lean_ord$GSM]
+
+# Anotación de columnas (timepoint + subject_id)
+annotation_col <- meta_lean_ord[, c("timepoint", "subject_id")]
+rownames(annotation_col) <- meta_lean_ord$GSM
+
+# Paleta de colores suave
+my_cols <- colorRampPalette(c("#67a9cf", "#f7f7f7", "#ef8a62"))(100)
+
+# Visualización Heatmap final de los 47 DEGs
+pheatmap(
+  expr_deg_47_scaled_ord,
+  cluster_rows   = TRUE,    # agrupa genes por patrón de expresión
+  cluster_cols   = FALSE,   # mantiene orden Lean1 pre/post, Lean2 pre/post, ...
+  show_rownames  = TRUE,
+  show_colnames  = FALSE,   # ocultamos GSM para no saturar
+  annotation_col = annotation_col,
+  color          = my_cols,
+  breaks         = seq(-2, 2, length.out = 101),
+  border_color   = NA,
+  fontsize_row   = 7,
+  main           = "Heatmap de los 47 genes diferencialmente expresados"
+)
+
+```
+
+```{r}
+# Heatmap de los 47 DEGs ordenados por logFC (up arriba / down abajo)
+
+DEGs_ord <- DEGs[order(DEGs$logFC, decreasing = TRUE), ]
+genes_ord <- rownames(DEGs_ord)
+
+expr_deg_47_scaled_ord2 <- expr_deg_47_scaled_ord[genes_ord, ]
+n_up   <- sum(DEGs_ord$logFC > 0)
+n_down <- sum(DEGs_ord$logFC < 0)
+
+# Visualización del heatmap
+pheatmap(
+  expr_deg_47_scaled_ord2,
+  cluster_rows   = FALSE,   # mantenemos el orden por logFC
+  cluster_cols   = FALSE,
+  show_rownames  = TRUE,
+  show_colnames  = FALSE,
+  annotation_col = annotation_col,
+  color          = my_cols,
+  breaks         = seq(-2, 2, length.out = 101),
+  border_color   = NA,
+  fontsize_row   = 7,
+  main           = "Heatmap de los 47 genes diferencialmente expresados",
+  gaps_row       = n_up      # separa visualmente genes up vs down
+)
+```
+
+Se generaron heatmaps a partir de los 47 DEGs identificados, para visualizar los patrones de expresión de los genes diferenialmente expresados. Los valores de expresión se escalaron por gen (z-score) para que fuese más sencillo comparar las muestras entre ellas. Además, las columnas se ordenaron por sujeto y momento de la biopsia (pre y post ejercicio), respetando el diseño pareado del estudio.
+
+## Análisis funcional (GO/KEGG)
+
+Una vez que se identificaron los genes diferencialmente expresados, se llevó a cabo un análisis funcional con la finalidad de interpretar los cambios observados en términos de procesos biológicos y rutas moleculares. Para ello, se aplicaron análisis de enriquecimiento utilizando las bases de datos de Gene Ontology (GO) y KEGG, que permitieron identificar funciones y vías que se representaban en el conjunto de genes modulados por el ejercicio.
+
+```{r}
+# Preparar lista de genes DEGs y universo (genes expresados) en ENTREZID
+gene_symbols <- rownames(DEGs)
+gene_df <- bitr(
+  gene_symbols,
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+gene_entrez <- unique(na.omit(gene_df$ENTREZID))
+
+# Definir background, es decir, todos los genes expresados en expr_mat_clean
+background_df <- bitr(
+  rownames(expr_mat_clean),
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+background_entrez <- unique(na.omit(background_df$ENTREZID))
+```
+
+Como universo de referencia para el análisis de enriquecimiento funcional se utilizó el conjunto de genes expresados en músculo esquelético en este estudio, que se definió a partir de la matriz de expresión después del preprocesado (expr_mat_clean). Esto permitió que se trabajara solamente con los genes que realmente se detectaron en el experimento, evitando que se introdujera información que no estaba presente en los datos. 
+Tras el filtrado por expresión, se consideraron 583 genes como universo de referencia, de los cuales 479 pudieron asociarse a identificadores ENTREZ y fueron los utilizados en los análisis funcionales posteriores. 
+
+```{r}
+# Gene Ontology: Biological Process (BP) con todos los DEGs
+ego_bp <- enrichGO(
+  gene          = gene_entrez,
+  universe      = background_entrez,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "ENTREZID",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+# Ver los primeros términos GO
+head(ego_bp)
+as.data.frame(ego_bp)
+
+# Dotplot GO BP (con términos significativos)
+dotplot(ego_bp, showCategory = 10, font.size = 10) + ggtitle("GO - Biological Process")
+
+# Guardar resultados GO en un archivo CSV
+ego_bp_df <- as.data.frame(ego_bp)
+write.csv(ego_bp_df, file = "GO_BP_DEGs47.csv", row.names = FALSE)
+```
+
+### Justificación del Dotplot
+
+En el análisis de enriquecimiento GO-BP se vieron procesos biológicos relacionados principalmente con la remodelación celular y la reorganización del citoesqueleto después de una sesión de ejercicio. Entre los términos que más se destacaron, se encontraron procesos relacionados con cambios en la arquitectura celular dependientes de actina y a la organización de estructuras celulares implicadas en la adaptación mecánica del músculo esquelético.
+Algunos de los términos enriquecidos aparecen normalmente en contextos no musculares, pero en este caso, reflejaron mecanismos celulares generales que también son importantes en músculo esquelético. La presencia de genes como ACTB, ACTG1, MYOT, CFL1 o NEXN sugirieron que el ejercicio agudo induce una respuesta orientada a la reorganización estructural y a procesos de adaptación asociados a la contracción muscular. 
+
+## GO estratificado por dirección de cambio
+
+```{r}
+# Separar los genes diferencialmente expresados por su dirección de cambio (up / down)
+up_genes <- rownames(DEGs[DEGs$logFC > 0, ])
+down_genes <- rownames(DEGs[DEGs$logFC < 0, ])
+
+# GO-BP para genes UP
+up_df <- bitr(
+  up_genes,
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+up_entrez <- unique(na.omit(up_df$ENTREZID))
+
+ego_bp_up <- enrichGO(
+  gene          = up_entrez,
+  universe      = background_entrez,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "ENTREZID",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+head(ego_bp_up)
+
+# Dotplot para genes UP
+dotplot(ego_bp_up, showCategory = 10, font.size = 10) + ggtitle("GO-BP enrichment (up-regulated genes)")
+
+# Guardar resultados GO a CSV (para anexos/GitHub)
+ego_bp_up_df <- as.data.frame(ego_bp_up)
+write.csv(ego_bp_up_df, file = "GO_BP_UP_DEGs.csv", row.names = FALSE)
+```
+
+```{r}
+# GO-BP para genes DOWN
+down_df <- bitr(
+  down_genes,
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+down_entrez <- unique(na.omit(down_df$ENTREZID))
+
+ego_bp_down <- enrichGO(
+  gene          = down_entrez,
+  universe      = background_entrez,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "ENTREZID",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+dotplot(ego_bp_down, showCategory = 10, font.size = 10) +
+  ggtitle("GO-BP enrichment (down-regulated genes)")
+
+head(ego_bp_down)
+```
+
+En conjunto, el análisis GO-BP nos informa de la respuesta transcriptómica al ejercicio agudo en músculo esquelético, la cual se centra en procesos de remodelación estructural y reorganización del citoesqueleto, que tienen coherencia con la adaptación mecánica después de la contracción. Al separar los genes según su dirección de cambio, el enriquecimiento se observa sobre todo en los genes sobreexpresados, mientras que en los genes infraexpresados no se detectaron términos significativos, probablemente por tener un menos número de genes en este grupo.
+Para complementar el análisis GO, se realizó un análisis de enriquecimiento de rutas utilizando la base de datos KEGG, permitiendo identificar conjuntos de genes que participan conjuntamente en rutas moleculares específicas y facilita la interpretación de los cambios transcriptómicos a nivel de vías  biológicas. 
+
+## KEGG
+
+```{r}
+# KEGG con todos los DEGs
+ekegg <- enrichKEGG(
+  gene          = gene_entrez,
+  universe      = background_entrez,
+  organism      = "hsa",
+  pvalueCutoff  = 0.05
+)
+
+# Ver primeros resultados KEGG
+head(ekegg)
+
+# Dotplot del resultado KEGG
+dotplot(ekegg, showCategory = 10, font.size = 10) + ggtitle("KEGG pathway enrichment (DEGs)")
+
+# Guardar resultados KEGG en un archivo CSV
+ekegg_df <- as.data.frame(ekegg)
+write.csv(ekegg_df, file = "KEGG_DEGs47.csv", row.names = FALSE)
+```
+
+En el análisis KEGG se observaron que muchos de los genes que cambian tras el ejercicio están relacionados con cómo la célula responde al estrés y a las fuerzas mecánicas que se generan durante la contracción muscular. Esto tiene sentido si se tiene en cuenta que el músculo, al ejercitarse, se ve sometido a tensiones físicas y a cambios en su equilibrio interno.
+Algunas de las rutas que aparecen enriquecidas suelen estar descritas en contextos de enfermedad o inflamación, pero en este caso, no indican un proceso patológico, sino que reflejan mecanismos generales que la célula utilza para adaptarse y responder a un estímulo intenso como el ejercicio.
+En resumen, estos resultados apoyan la idea de que el ejercicio agudo no provoca cambios drásticos en todos los genes, sino pequeños ajustes concretos y coordinados en algunas vías clave que ayudan al músculo a adaptarse después del esfuerzo.
+
